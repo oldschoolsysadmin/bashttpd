@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-LOG_LEVEL=`echo $LOG_LEVEL | tr A-Z a-z`
+LOG_LEVEL=`echo ${LOG_LEVEL:-warning} | tr A-Z a-z`
 test $LOG_LEVEL == "debug" && set -x
 
 # Configuration
@@ -145,7 +145,7 @@ trap cleanup EXIT SIGINT
 echo >$REQ &
 
 while true; do
-    read line <$RES
+    read line <$RES  # blocks until netcat starts
     # first request is always bogus due to te pipe priming
     [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /.*\ HTTP.*$ ]] || continue
     handle_request "$line" >$REQ
