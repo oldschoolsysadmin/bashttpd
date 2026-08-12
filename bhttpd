@@ -24,6 +24,36 @@ urldecode() {
     printf '%b' "${url_encoded//%/\\x}"
 }
 
+# BASP (Bourne-Again Server Pages): execute <% shell %> blocks inline,
+# splicing their stdout into the surrounding document.
+render_basp() {
+    local content rest before code out=""
+    content="$(cat "$1")"
+    rest="$content"
+
+    if [[ "$rest" != *'<%'* ]]; then
+        printf '%s' "$rest"
+        return
+    fi
+
+    while [[ "$rest" == *'<%'* ]]; do
+        before="${rest%%<%*}"
+        rest="${rest#*<%}"
+        if [[ "$rest" != *'%>'* ]]; then
+            # no closing tag; leave it as-is
+            out+="$before<%$rest"
+            rest=""
+            break
+        fi
+        code="${rest%%%>*}"
+        rest="${rest#*%>}"
+        out+="$before$(eval "$code" 2>&1)"
+    done
+    out+="$rest"
+
+    printf '%s' "$out"
+}
+
 # HTTP Response Helpers
 respond() {
     local status="$1"
@@ -70,7 +100,7 @@ handle_request() {
         case $METHOD in
             GET)
                 if test -f "$REQUEST_PATH"; then
-                    respond "200 OK" "$(file -b --mime-type "$REQUEST_PATH")" "$(cat "$REQUEST_PATH")"
+                    respond "200 OK" "$(file -b --mime-type "$REQUEST_PATH")" "$(render_basp "$REQUEST_PATH")"
                 else
                     respond "404 Not Found" "" "404 Not Found"
                 fi
