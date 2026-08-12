@@ -14,6 +14,16 @@ PORT=8080
 WWWROOT=htdocs
 RUNDIR=run
 
+debug() {
+    echo "$@" 1>&2
+}
+
+# URL decoding helper
+urldecode() {
+    local url_encoded="${1//+/ }"
+    printf '%b' "${url_encoded//%/\\x}"
+}
+
 # HTTP Response Helpers
 respond() {
     local status="$1"
@@ -54,13 +64,13 @@ handle_request() {
     local line="$1"
     if [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /(.*)\ HTTP.*$ ]]; then
         declare -g METHOD=${BASH_REMATCH[1]}
-        declare -g REQUEST_PATH=$WWWROOT/${BASH_REMATCH[2]}
+        declare -g REQUEST_PATH=$WWWROOT/$(urldecode "${BASH_REMATCH[2]}")
         parse_headers
 
         case $METHOD in
             GET)
-                if test -f $REQUEST_PATH; then
-                    respond "200 OK" "$(file -b --mime-type $REQUEST_PATH)" "$(cat $REQUEST_PATH)"
+                if test -f "$REQUEST_PATH"; then
+                    respond "200 OK" "$(file -b --mime-type "$REQUEST_PATH")" "$(cat "$REQUEST_PATH")"
                 else
                     respond "404 Not Found" "" "404 Not Found"
                 fi
@@ -76,7 +86,7 @@ handle_request() {
                 done <<< "$post_data"
                 
                 if test -x "$REQUEST_PATH"; then
-                    respond "200 OK" "" "$($REQUEST_PATH)"
+                    respond "200 OK" "" "$("$REQUEST_PATH")"
                 else
                     respond "404 Not Found" "" "Script not found or not executable" 
                 fi
