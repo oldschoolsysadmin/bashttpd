@@ -68,6 +68,7 @@ parse_headers() {
     local prev_header=""
     
     while read -r line; do
+        line="${line%$'\r'}"
         # Break at empty line (end of headers)
         test -z "$line" && break
         
@@ -173,22 +174,48 @@ REQ=$RUNDIR/rx RES=$RUNDIR/tx
 mkfifo $REQ $RES
 
 cleanup() {
+    exec 4<&- 2>/dev/null
     rm -f $REQ $RES
-    kill %2 2>/dev/null
     set +x
     exit
 }
 
 trap cleanup EXIT SIGINT
 
-# Prime the nc_in pipe first
-echo >$REQ &
+# Hold a read end of $RES open for the life of the server. Opening a fifo
+# for write alone blocks until a reader shows up, and nc needs to open $RES
+# for writing (its stdout) fresh on every connection below -- without a
+# standing reader here, that open would deadlock.
+exec 4<>$RES
 
+# One nc per connection, waited out fully before the next is spawned. A
+# single long-lived `nc -lk` reads $REQ independently of whether a client
+# is connected, so a response written while nc sat between connections got
+# buffered and flushed to whichever client connected *next* instead of the
+# one it was meant for -- a permanent one-request lag. Spawning fresh per
+# connection removes that stale window entirely.
 while true; do
-    read line <$RES  # blocks until netcat starts
-    # first request is always bogus due to te pipe priming
-    [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /.*\ HTTP.*$ ]] || continue
-    handle_request "$line" >$REQ
-done &
-
-nc -lk $PORT <$REQ >$RES
+    # Subshell so a bad request (set -e tripping on something like a
+    # malformed body) only kills this one connection's handling instead of
+    # the whole server -- same isolation the old design got for free from
+    # its request handler living in a backgrounded loop.
+    (
+        # Same deadlock-avoidance trick as fd 4 above, but this one we
+        # deliberately close once we're done writing: nc waits for stdin
+        # EOF (all writers of $REQ closed) as well as the socket closing
+        # before it exits, so a placeholder held open forever would leave
+        # nc -- and the port -- stuck for good after the very first
+        # request.
+        exec 3<>$REQ
+        nc -l $PORT <$REQ >$RES &
+        NC_PID=$!
+        read line <$RES  # blocks until a client connects
+        # parse_headers and the POST/PUT/PATCH body reads use bash's
+        # default stdin with no redirection of their own -- without
+        # pointing it at $RES here, header/body lines are left unread in
+        # the fifo and get misread as the *next* request's request line.
+        [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /.*\ HTTP.*$ ]] && handle_request "$line" <$RES >$REQ
+        exec 3<&-
+        wait $NC_PID 2>/dev/null
+    )
+done
