@@ -170,30 +170,31 @@ handle_request() {
     fi
 }
 
-REQ=$RUNDIR/rx RES=$RUNDIR/tx
-mkfifo $REQ $RES
+REQUEST=$RUNDIR/request RESPONSE=$RUNDIR/response
+mkfifo $REQUEST $RESPONSE
 
 cleanup() {
     exec 4<&- 2>/dev/null
-    rm -f $REQ $RES
+    rm -f $REQUEST $RESPONSE
     set +x
     exit
 }
 
 trap cleanup EXIT SIGINT
 
-# Hold a read end of $RES open for the life of the server. Opening a fifo
-# for write alone blocks until a reader shows up, and nc needs to open $RES
-# for writing (its stdout) fresh on every connection below -- without a
-# standing reader here, that open would deadlock.
-exec 4<>$RES
+# Hold a read end of $REQUEST open for the life of the server. Opening a
+# fifo for write alone blocks until a reader shows up, and nc needs to open
+# $REQUEST for writing (its stdout, the bytes it received from the client)
+# fresh on every connection below -- without a standing reader here, that
+# open would deadlock.
+exec 4<>$REQUEST
 
 # One nc per connection, waited out fully before the next is spawned. A
-# single long-lived `nc -lk` reads $REQ independently of whether a client
-# is connected, so a response written while nc sat between connections got
-# buffered and flushed to whichever client connected *next* instead of the
-# one it was meant for -- a permanent one-request lag. Spawning fresh per
-# connection removes that stale window entirely.
+# single long-lived `nc -lk` reads $RESPONSE independently of whether a
+# client is connected, so a response written while nc sat between
+# connections got buffered and flushed to whichever client connected
+# *next* instead of the one it was meant for -- a permanent one-request
+# lag. Spawning fresh per connection removes that stale window entirely.
 while true; do
     # Subshell so a bad request (set -e tripping on something like a
     # malformed body) only kills this one connection's handling instead of
@@ -202,19 +203,20 @@ while true; do
     (
         # Same deadlock-avoidance trick as fd 4 above, but this one we
         # deliberately close once we're done writing: nc waits for stdin
-        # EOF (all writers of $REQ closed) as well as the socket closing
-        # before it exits, so a placeholder held open forever would leave
-        # nc -- and the port -- stuck for good after the very first
-        # request.
-        exec 3<>$REQ
-        nc -l $PORT <$REQ >$RES &
+        # EOF (all writers of $RESPONSE closed) as well as the socket
+        # closing before it exits, so a placeholder held open forever
+        # would leave nc -- and the port -- stuck for good after the very
+        # first request.
+        exec 3<>$RESPONSE
+        nc -l $PORT <$RESPONSE >$REQUEST &
         NC_PID=$!
-        read line <$RES  # blocks until a client connects
+        read line <$REQUEST  # blocks until a client connects
         # parse_headers and the POST/PUT/PATCH body reads use bash's
         # default stdin with no redirection of their own -- without
-        # pointing it at $RES here, header/body lines are left unread in
-        # the fifo and get misread as the *next* request's request line.
-        [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /.*\ HTTP.*$ ]] && handle_request "$line" <$RES >$REQ
+        # pointing it at $REQUEST here, header/body lines are left unread
+        # in the fifo and get misread as the *next* request's request
+        # line.
+        [[ $line =~ ^(GET|POST|PUT|DELETE|PATCH)\ /.*\ HTTP.*$ ]] && handle_request "$line" <$REQUEST >$RESPONSE
         exec 3<&-
         wait $NC_PID 2>/dev/null
     )
