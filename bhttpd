@@ -109,17 +109,21 @@ handle_request() {
             POST)
                 local content_length=${HEADERS[content-length]:-0}
                 local post_data=""
-                test $content_length -gt 0 && read -n $content_length post_data
-                
-                while IFS= read -r line; do 
-                    # free persistent sessions!
-                    export "$line"
-                done <<< "$post_data"
-                
+                test $content_length -gt 0 && read -N $content_length post_data
+
+                # free persistent sessions! leading KEY=VALUE lines get
+                # exported and peeled off; the first line that doesn't look
+                # like one stops the scan, and everything from there on is
+                # left for the script's stdin.
+                while [[ "$post_data" =~ ^([A-Z0-9_]+=[^$'\n']*)$'\n'?(.*)$ ]]; do
+                    export "${BASH_REMATCH[1]}"
+                    post_data="${BASH_REMATCH[2]}"
+                done
+
                 if test -x "$REQUEST_PATH"; then
-                    respond "200 OK" "" "$("$REQUEST_PATH")"
+                    respond "200 OK" "" "$("$REQUEST_PATH" <<<"$post_data")"
                 else
-                    respond "404 Not Found" "" "Script not found or not executable" 
+                    respond "404 Not Found" "" "Script not found or not executable"
                 fi
                 ;;
             PUT)
@@ -142,7 +146,7 @@ handle_request() {
                 fi
                 
                 if test $content_length -gt 0; then
-                    read -n $content_length patch_data
+                    read -N $content_length patch_data
                     if echo "$patch_data" | patch "$REQUEST_PATH" -; then
                         respond "200 OK" "" "Patch applied"
                     else
